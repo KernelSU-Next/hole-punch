@@ -83,8 +83,6 @@ impl SparseFile for File {
             tags.push(Tag::End(new_end));
         }
 
-        println!("{:?}", tags);
-
         // Process our list of start point tags into a list of segments.
         let mut tag_pairs = tags
             .iter()

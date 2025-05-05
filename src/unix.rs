@@ -9,6 +9,9 @@ use std::os::unix::io::AsRawFd;
 use errno::errno;
 use libc::{c_int, lseek, off_t, EINVAL, ENXIO, SEEK_DATA, SEEK_END, SEEK_HOLE};
 
+#[cfg(target_pointer_width = "32")]
+use std::convert::TryInto;
+
 #[derive(Debug, Clone, Copy)]
 enum Tag {
     Data(i64),
@@ -43,6 +46,7 @@ impl SparseFile for File {
             } else {
                 Tag::Data(0)
             };
+            #[cfg(target_pointer_width = "64")]
             while last_offset.offset() < end {
                 tags.push(last_offset);
                 match last_offset {
@@ -74,13 +78,51 @@ impl SparseFile for File {
                     Tag::End(_) => unreachable!(),
                 }
             }
+            #[cfg(target_pointer_width = "64")]
             tags.push(Tag::End(end));
+            #[cfg(target_pointer_width = "32")]
+            while last_offset.offset() < end.into() {
+                tags.push(last_offset);
+                match last_offset {
+                    Tag::Data(x) => {
+                        // If the last tag was a data, we are looking for a hole
+                        if let Some(next_offset) = find_next_hole(fd, x.try_into().unwrap())? {
+                            last_offset = Tag::Hole(next_offset.into());
+                        } else {
+                            // We know the last segment was a data, and there
+                            // are no remaining holes, so we must be at the end
+                            // of the file, so we end the loop and push an end
+                            last_offset = Tag::End(end.into());
+                        }
+                    }
+                    Tag::Hole(x) => {
+                        // If the last tag was a hole, we are looking for a data
+                        if let Some(next_offset) = find_next_data(fd, x.try_into().unwrap())? {
+                            last_offset = Tag::Data(next_offset.into());
+                        } else {
+                            // We know the last segment was a hole, and there
+                            // are no remaining holes, so we must be at the end
+                            // of the file, so we end the loop and push an end
+                            last_offset = Tag::End(end.into());
+                        }
+                    }
+                    // We never set last_offset to Tag::End until we are done
+                    // with the loop, so if we encounter an End, we have made a
+                    // major programming error
+                    Tag::End(_) => unreachable!(),
+                }
+            }
+            #[cfg(target_pointer_width = "32")]
+            tags.push(Tag::End(end.into()));
         } else {
             // In this situation, we have no holes in the data, so we just
             // represent a single data segment
             tags.push(Tag::Data(0));
             let new_end = find_end(fd)?;
+            #[cfg(target_pointer_width = "64")]
             tags.push(Tag::End(new_end));
+            #[cfg(target_pointer_width = "32")]
+            tags.push(Tag::End(new_end.into()));
         }
 
         // Process our list of start point tags into a list of segments.
